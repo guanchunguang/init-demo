@@ -1,0 +1,5 @@
+# Git Dual Platform 配置（不要提交！）
+.env
+env.example
+.base.env
+base.env.example
