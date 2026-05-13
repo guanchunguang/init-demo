@@ -533,9 +533,19 @@ function SSH-Push-Gitee {
         }
     }
     catch {
-        $errorDetail = $_.Exception.Message
-        Write-Log ERROR "Gitee add failed: $errorDetail"
-        exit 1
+        $statusCode = [int]$_.Exception.Response.StatusCode
+
+        # Check if key already exists based on status code
+        if ($statusCode -eq 400) {
+            Write-Log WARN "Gitee SSH key already exists, skipping"
+        }
+        elseif ($statusCode -eq 422) {
+            Write-Log WARN "Gitee SSH key already exists, skipping"
+        }
+        else {
+            Write-Log ERROR "Gitee add failed (HTTP $statusCode)"
+            exit 1
+        }
     }
 }
 
