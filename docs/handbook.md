@@ -45,25 +45,36 @@ GIT_USER_EMAIL=your@email.com
 
 #### Step 3: 配置 SSH（如果还没有配置过）
 
+SSH 配置需要三个步骤：创建密钥、推送公钥、验证连接
+
 ```powershell
 # Windows
-.\git-devops.ps1 ssh create -p github -f
+.\git-devops.ps1 ssh create -p github -f    # 创建 SSH 密钥对
+.\git-devops.ps1 ssh push -p github          # 推送公钥到平台
+.\git-devops.ps1 ssh verify -p github        # 验证 SSH 连接
 
 # Linux/macOS
-./git-devops.sh ssh create -p github -f
+./git-devops.sh ssh create -p github -f    # 创建 SSH 密钥对
+./git-devops.sh ssh push -p github          # 推送公钥到平台
+./git-devops.sh ssh verify -p github        # 验证 SSH 连接
 ```
 
 **目的**：
-- 生成 SSH 密钥对
-- 将公钥推送到 GitHub/Gitee
-- 验证 SSH 连接是否正常
+- `ssh create` - 生成 SSH 密钥对
+- `ssh push` - 将公钥添加到 GitHub/Gitee
+- `ssh verify` - 验证 SSH 连接是否正常
 
 **预期输出**：
 ```
+# ssh create
 [INFO] Creating SSH key...
 [OK] SSH key created: ~/.ssh/id_ed25519_github_yourname
+
+# ssh push
 [INFO] Pushing SSH public key to platform...
 [OK] Added to GitHub (ID: xxxxxxxx)
+
+# ssh verify
 [INFO] Verifying SSH connection...
 [OK] github-yourname SSH connection OK
 ```
@@ -290,8 +301,9 @@ cd test
 # 2. 配置 .env 文件
 
 # 3. 创建 SSH 密钥并推送到平台
-.\git-devops.ps1 ssh create -p github -f
-.\git-devops.ps1 ssh verify -p github
+.\git-devops.ps1 ssh create -p github -f    # 创建密钥
+.\git-devops.ps1 ssh push -p github          # 推送公钥
+.\git-devops.ps1 ssh verify -p github        # 验证连接
 
 # 4. 一键初始化
 .\git-devops.ps1 all init -p github -y
