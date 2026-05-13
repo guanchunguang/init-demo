@@ -200,47 +200,52 @@ function Load-Config {
 # ============================================================
 # JSON Parsing Functions
 # ============================================================
-function Get-JsonArrayLength {
+function Get-JsonAccounts {
     param([string]$Json)
 
-    $content = $Json.Trim() -replace '^\[|\]$', '' -replace '\s+', ''
-    if ([string]::IsNullOrWhiteSpace($content)) {
-        return 0
+    if ([string]::IsNullOrWhiteSpace($Json)) {
+        return @()
     }
-    return (($content -split ',').Count)
+
+    try {
+        $result = $Json | ConvertFrom-Json
+        if ($result -is [System.Array]) {
+            return $result
+        }
+        # Single object - wrap in array
+        return @($result)
+    }
+    catch {
+        Write-Log DEBUG "Failed to parse JSON: $_"
+        return @()
+    }
 }
 
-function Get-JsonField {
+function Get-AccountInfo {
     param(
-        [string]$Json,
-        [int]$Index,
-        [string]$Field
+        [string]$Platform,
+        [string]$AccountsJson
     )
 
-    $content = $Json.Trim() -replace '^\[|\]$', '' -replace '\s+', ''
-
-    $objects = $content -split '(?<=\})(?=\{)' | Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
-    if ($Index -ge $objects.Count) {
-        return ""
+    $accounts = Get-JsonAccounts -Json $AccountsJson
+    if (@($accounts).Count -eq 0) {
+        return $null
     }
 
-    $obj = $objects[$Index].Trim('{', '}')
-
-    $fieldPattern = '"' + $Field + '"\s*:\s*"([^"]*)"'
-    if ($obj -match $fieldPattern) {
-        return $matches[1]
+    foreach ($account in $accounts) {
+        if ($account.user -and $account.token -and $account.host) {
+            return @{
+                User = $account.user
+                Token = $account.token
+                Host = $account.host
+            }
+        }
     }
-
-    $fieldPatternNum = '"' + $Field + '"\s*:\s*(\d+)'
-    if ($obj -match $fieldPatternNum) {
-        return $matches[1]
-    }
-
-    return ""
+    return $null
 }
 
 # ============================================================
-# Get Account Config
+# Get Account Config (for backward compatibility)
 # ============================================================
 function Get-AccountConfig {
     param(
@@ -249,20 +254,10 @@ function Get-AccountConfig {
     )
 
     $accountsJson = Get-Variable -Name $AccountsVar -ValueOnly
-    $count = Get-JsonArrayLength -Json $accountsJson
+    $account = Get-AccountInfo -Platform $Platform -AccountsJson $accountsJson
 
-    if ($count -eq 0) {
-        return ""
-    }
-
-    for ($i = 0; $i -lt $count; $i++) {
-        $user = Get-JsonField -Json $accountsJson -Index $i -Field "user"
-        $token = Get-JsonField -Json $accountsJson -Index $i -Field "token"
-        $host = Get-JsonField -Json $accountsJson -Index $i -Field "host"
-
-        if ($user -and $token -and $host) {
-            return "${user}:${token}:${host}"
-        }
+    if ($account) {
+        return "$($account.User):$($account.Token):$($account.Host)"
     }
     return ""
 }
@@ -399,7 +394,7 @@ function SSH-Push {
     $parts = $accountLine -split ':'
     $user = $parts[0]
     $token = $parts[1]
-    $host = $parts[2]
+    $targetHost = $parts[2]
 
     $keyFile = "id_ed25519_${Platform}_${user}"
     $pubKeyPath = Join-Path $SSH_DIR "${keyFile}.pub"
@@ -525,22 +520,22 @@ function SSH-Verify {
 
     $parts = $accountLine -split ':'
     $user = $parts[0]
-    $host = $parts[2]
+    $targetHost = $parts[2]
 
-    Write-Log INFO "Testing $host ..."
+    Write-Log INFO "Testing $targetHost ..."
 
     try {
-        $result = ssh -T -o StrictHostKeyChecking=no -o ConnectTimeout=10 "git@$host" 2>&1
+        $result = ssh -T -o StrictHostKeyChecking=no -o ConnectTimeout=10 "git@$targetHost" 2>&1
         if ($result -match "(Hi|successfully authenticated)") {
-            Write-Log SUCCESS "$host SSH connection OK"
+            Write-Log SUCCESS "$targetHost SSH connection OK"
         }
         else {
-            Write-Log WARN "$host response: $result"
+            Write-Log WARN "$targetHost response: $result"
             return 1
         }
     }
     catch {
-        Write-Log WARN "$host connection failed: $_"
+        Write-Log WARN "$targetHost connection failed: $_"
         return 1
     }
 }
@@ -922,8 +917,8 @@ function Git-Remote {
     if ($githubAccount) {
         $parts = $githubAccount -split ':'
         $user = $parts[0]
-        $host = $parts[2]
-        $remoteUrl = "git@${host}:${user}/$project.git"
+        $targetHost = $parts[2]
+        $remoteUrl = "git@${targetHost}:${user}/$project.git"
         git remote add github $remoteUrl
         Write-Log SUCCESS "GitHub remote: github -> $remoteUrl"
     }
@@ -932,8 +927,8 @@ function Git-Remote {
     if ($giteeAccount) {
         $parts = $giteeAccount -split ':'
         $user = $parts[0]
-        $host = $parts[2]
-        $remoteUrl = "git@${host}:${user}/$project.git"
+        $targetHost = $parts[2]
+        $remoteUrl = "git@${targetHost}:${user}/$project.git"
         git remote add gitee $remoteUrl
         Write-Log SUCCESS "Gitee remote: gitee -> $remoteUrl"
     }
