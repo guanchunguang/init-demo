@@ -105,6 +105,53 @@ function Write-Log {
 }
 
 # ============================================================
+# Get OS Type
+# Returns: win / lin / mac / wsl
+# ============================================================
+function Get-OsType {
+    $osType = "lin"
+
+    if ($IsWindows -or $env:OS -eq "Windows_NT") {
+        # Check if running under WSL
+        if (Test-Path "/proc/version") {
+            $versionContent = Get-Content "/proc/version" -Raw -ErrorAction SilentlyContinue
+            if ($versionContent -match "Microsoft" -or $versionContent -match "WSL") {
+                $osType = "wsl"
+            } else {
+                $osType = "win"
+            }
+        } else {
+            $osType = "win"
+        }
+    }
+    elseif ($IsMacOS) {
+        $osType = "mac"
+    }
+    elseif ($IsLinux) {
+        $osType = "lin"
+    }
+
+    return $osType
+}
+
+# ============================================================
+# Generate SSH Key Title with platform and system info
+# Format: git-devops-{os}-{platform}-{user}-{timestamp}
+# Example: git-devops-win-gitee-guanchunguang-202605131150
+# ============================================================
+function New-SshKeyTitle {
+    param(
+        [string]$Platform,
+        [string]$User
+    )
+
+    $osType = Get-OsType
+    $timestamp = Get-Date -Format "yyyyMMddHHmm"
+
+    return "git-devops-${osType}-${Platform}-${User}-${timestamp}"
+}
+
+# ============================================================
 # Show Help
 # ============================================================
 function Show-Help {
@@ -406,7 +453,7 @@ function SSH-Push {
     }
 
     $keyContent = (Get-Content $pubKeyPath -Raw).Trim()
-    $title = "git-devops ${Platform} ${user} $([DateTimeOffset]::Now.ToUnixTimeSeconds())"
+    $title = New-SshKeyTitle -Platform $Platform -User $user
 
     if ($Platform -eq "github") {
         SSH-Push-GitHub -User $user -Token $token -Title $title -KeyContent $keyContent

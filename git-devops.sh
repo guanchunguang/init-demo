@@ -105,6 +105,50 @@ log() {
 }
 
 # ============================================================
+# 获取操作系统标识符
+# 返回: win / lin / mac / wsl
+# ============================================================
+get_os_type() {
+    local os_type="lin"
+
+    case "$(uname -s)" in
+        CYGWIN*|MINGW*|MSYS*)
+            os_type="win"
+            ;;
+        Darwin)
+            os_type="mac"
+            ;;
+        Linux)
+            if grep -qEi "(Microsoft|WSL)" /proc/version 2>/dev/null; then
+                os_type="wsl"
+            else
+                os_type="lin"
+            fi
+            ;;
+    esac
+
+    echo "$os_type"
+}
+
+# ============================================================
+# 生成 SSH Key 标题（包含平台和系统信息）
+# 格式: git-devops-{os}-{platform}-{user}-{timestamp}
+# 示例: git-devops-win-gitee-guanchunguang-202605131150
+# ============================================================
+generate_key_title() {
+    local platform="$1"
+    local user="$2"
+
+    local os_type
+    os_type=$(get_os_type)
+
+    local timestamp
+    timestamp=$(date +%Y%m%d%H%M)
+
+    echo "git-devops-${os_type}-${platform}-${user}-${timestamp}"
+}
+
+# ============================================================
 # 显示帮助
 # ============================================================
 show_help() {
@@ -446,7 +490,8 @@ ssh_push() {
     local key_content
     key_content=$(cat "$pub_key_path" | tr -d '\n')
 
-    local title="git-devops ${PLATFORM} ${user} $(date +%s)"
+    local title
+    title=$(generate_key_title "$PLATFORM" "$user")
 
     if [ "$PLATFORM" = "github" ]; then
         ssh_push_github "$user" "$token" "$title" "$key_content"
