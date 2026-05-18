@@ -1,0 +1,1758 @@
+# ============================================================
+# Git DevOps CLI - Cross-Platform Git Automation Tool
+# ============================================================
+# Platform: Windows PowerShell
+#
+# Usage:
+#   .\git-devops.ps1 <module> <action> [options]
+#   .\git-devops.ps1 ssh create -p github
+#   .\git-devops.ps1 repo create -p github -n myrepo
+#   .\git-devops.ps1 git init
+#   .\git-devops.ps1 all init -p github
+#   .\git-devops.ps1 -h
+#
+# Global Options:
+#   -p, --platform    Target platform: github / gitee
+#   -n, --name        Repository name
+#   -t, --title       SSH key title
+#   -f, --force       Overwrite existing resources
+#   -y, --yes         Auto-confirm dangerous operations
+#   -D, --debug       Show DEBUG level logs
+#   -q, --quiet       Show only WARN/ERROR logs
+#   -c, --clean       Clean local git config (keep .git)
+#   -r, --reset       Delete .git directory completely
+#   --dry-run         Preview operations without executing
+# ============================================================
+
+# ============================================================
+# Parameters (MUST come first, after comments only)
+# ============================================================
+param(
+    [string]$Module = "",
+    [string]$Action = "",
+    [string]$Platform = "",
+    [Alias("p")]
+    [string]$PlatformShort = "",
+    [string]$RepoName = "",
+    [Alias("n")]
+    [string]$Name = "",
+    [string]$Title = "",
+    [Alias("t")]
+    [string]$TitleShort = "",
+    [switch]$Force,
+    [Alias("f")]
+    [switch]$ForceShort,
+    [switch]$Yes,
+    [Alias("y")]
+    [switch]$YesShort,
+    [switch]$Debug,
+    [Alias("D")]
+    [switch]$DebugShort,
+    [switch]$Quiet,
+    [Alias("q")]
+    [switch]$QuietShort,
+    [switch]$Help,
+    [Alias("h")]
+    [switch]$HelpShort,
+    [switch]$Clean,
+    [Alias("c")]
+    [switch]$CleanShort,
+    [switch]$Reset,
+    [Alias("r")]
+    [switch]$ResetShort,
+    [switch]$DryRun
+)
+
+# ============================================================
+# Encoding (must be after param block)
+# ============================================================
+[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+$OutputEncoding = [System.Text.Encoding]::UTF8
+
+# Strict mode
+Set-StrictMode -Version Latest
+
+# ============================================================
+# Global Variables
+# ============================================================
+$script:SCRIPT_DIR = $PSScriptRoot
+$script:CONFIG_FILE = Join-Path $PSScriptRoot ".env"
+$script:SSH_DIR = Join-Path $env:USERPROFILE ".ssh"
+$script:REPO_NAME = if ($Name) { $Name } else { $RepoName }
+$script:PLATFORM = if ($PlatformShort) { $PlatformShort } else { $Platform }
+$script:TITLE = if ($TitleShort) { $TitleShort } else { $Title }
+$script:FORCE_MODE = $Force -or $ForceShort
+$script:AUTO_YES = $Yes -or $YesShort
+$script:DEBUG_MODE = $Debug -or $DebugShort
+$script:QUIET_MODE = $Quiet -or $QuietShort
+$script:HELP_MODE = $Help -or $HelpShort
+$script:CLEAN_MODE = $Clean -or $CleanShort
+$script:RESET_MODE = $Reset -or $ResetShort
+$script:DRY_RUN = $DryRun
+
+$script:GITHUB_ACCOUNTS = "[]"
+$script:GITEE_ACCOUNTS = "[]"
+$script:GIT_USER_NAME = ""
+$script:GIT_USER_EMAIL = ""
+
+# ============================================================
+# Colors
+# ============================================================
+$script:COLOR_DEBUG = "Gray"
+$script:COLOR_INFO = "Cyan"
+$script:COLOR_WARN = "Yellow"
+$script:COLOR_ERROR = "Red"
+$script:COLOR_SUCCESS = "Green"
+
+# ============================================================
+# Logging Function
+# ============================================================
+function Write-Log {
+    param(
+        [ValidateSet("DEBUG", "INFO", "WARN", "ERROR", "SUCCESS")]
+        [string]$Level = "INFO",
+        [string]$Message = ""
+    )
+
+    if ($script:QUIET_MODE -and ($Level -eq "INFO" -or $Level -eq "DEBUG")) {
+        return
+    }
+
+    if ($Level -eq "DEBUG" -and -not $script:DEBUG_MODE) {
+        return
+    }
+
+    $color = switch ($Level) {
+        "DEBUG"   { $COLOR_DEBUG }
+        "INFO"    { $COLOR_INFO }
+        "WARN"    { $COLOR_WARN }
+        "ERROR"   { $COLOR_ERROR }
+        "SUCCESS" { $COLOR_SUCCESS }
+        default   { $COLOR_INFO }
+    }
+
+    $tag = switch ($Level) {
+        "DEBUG"   { "[DEBUG]" }
+        "INFO"    { "[INFO]" }
+        "WARN"    { "[WARN]" }
+        "ERROR"   { "[ERROR]" }
+        "SUCCESS" { "[OK]" }
+        default   { "[INFO]" }
+    }
+
+    # Mask sensitive data in DEBUG mode
+    if ($Level -eq "DEBUG") {
+        $Message = Mask-Token $Message
+    }
+
+    Write-Host -ForegroundColor $color "$tag $Message"
+}
+
+# ============================================================
+# Mask Token for logging (show first 4 and last 4 chars)
+# ============================================================
+function Mask-Token {
+    param([string]$Text)
+
+    if ([string]::IsNullOrEmpty($Text)) {
+        return $Text
+    }
+
+    # Mask tokens in formats like: ghp_xxxx, gho_xxxx, ghs_xxxx, ghr_xxxx, ghp_xxxxxxxxxxxx
+    $Text -replace '(gh[pousr]_[a-zA-Z0-9]{8})[a-zA-Z0-9]{*}([a-zA-Z0-9]{4})', '$1...$2' `
+           -replace '([0-9a-f]{8})[0-9a-f]{*}([0-9a-f]{4})', '$1...$2'
+}
+
+# ============================================================
+# Get OS Type
+# Returns: win / lin / mac / wsl
+# ============================================================
+function Get-OsType {
+    $osType = "lin"
+
+    if ($env:OS -eq "Windows_NT" -or (Test-Path "C:\Windows" -PathType Container)) {
+        # Check if running under WSL
+        if (Test-Path "/proc/version") {
+            $versionContent = Get-Content "/proc/version" -Raw -ErrorAction SilentlyContinue
+            if ($versionContent -match "Microsoft" -or $versionContent -match "WSL") {
+                $osType = "wsl"
+            } else {
+                $osType = "win"
+            }
+        } else {
+            $osType = "win"
+        }
+    }
+    elseif ($IsMacOS) {
+        $osType = "mac"
+    }
+    elseif ($IsLinux) {
+        $osType = "lin"
+    }
+
+    return $osType
+}
+
+# ============================================================
+# Generate SSH Key Title with platform and system info
+# Format: git-devops-{os}-{platform}-{user}-{timestamp}
+# Example: git-devops-win-gitee-guanchunguang-202605131150
+# ============================================================
+function New-SshKeyTitle {
+    param(
+        [string]$Platform,
+        [string]$User
+    )
+
+    $osType = Get-OsType
+    $timestamp = Get-Date -Format "yyyyMMddHHmm"
+
+    return "git-devops-${osType}-${Platform}-${User}-${timestamp}"
+}
+
+# ============================================================
+# Show Help
+# ============================================================
+function Show-Help {
+    Write-Host ""
+    Write-Host -ForegroundColor Cyan "Git DevOps CLI - Cross-Platform Git Automation Tool"
+    Write-Host ""
+    Write-Host -ForegroundColor Yellow "Usage:"
+    Write-Host '  .\git-devops.ps1 <module> <action> [options]'
+    Write-Host ""
+    Write-Host -ForegroundColor Yellow "Modules:"
+    Write-Host "  ssh      SSH key management"
+    Write-Host "  repo     Remote repo management"
+    Write-Host "  git      Git local config"
+    Write-Host "  all      One-command init"
+    Write-Host "  clean    Clean operations"
+    Write-Host ""
+    Write-Host -ForegroundColor Yellow "Examples:"
+    Write-Host "  .\git-devops.ps1 ssh create -p github"
+    Write-Host "  .\git-devops.ps1 ssh verify -p github"
+    Write-Host "  .\git-devops.ps1 repo create -p github -n myrepo"
+    Write-Host "  .\git-devops.ps1 repo delete -p github -n myrepo -y"
+    Write-Host "  .\git-devops.ps1 git init"
+    Write-Host "  .\git-devops.ps1 all init -p github"
+    Write-Host "  .\git-devops.ps1 -c -y"
+    Write-Host "  .\git-devops.ps1 -r -y"
+    Write-Host ""
+    Write-Host -ForegroundColor Yellow "Global Options:"
+    Write-Host "  -p, --platform    Target platform: github / gitee"
+    Write-Host "  -n, --name        Repository name"
+    Write-Host "  -t, --title       SSH key title"
+    Write-Host "  -f, --force       Overwrite existing resources"
+    Write-Host "  -y, --yes         Auto-confirm dangerous operations"
+    Write-Host "  -D, --debug       Show DEBUG level logs"
+    Write-Host "  -q, --quiet       Show only WARN/ERROR logs"
+    Write-Host "  -h, --help        Show this help"
+    Write-Host "  -c, --clean       Clean local git config (keep .git)"
+    Write-Host "  -r, --reset       Delete .git directory completely"
+    Write-Host "  --dry-run         Preview operations without executing"
+    Write-Host ""
+    Write-Host -ForegroundColor Yellow "SSH Module Actions:"
+    Write-Host "  create         Create SSH key pair"
+    Write-Host "  push           Push public key to platform"
+    Write-Host "  verify         Verify SSH connection"
+    Write-Host "  remove         Remove SSH key from platform"
+    Write-Host ""
+    Write-Host -ForegroundColor Yellow "Repo Module Actions:"
+    Write-Host "  create         Create remote repo"
+    Write-Host "  delete         Delete remote repo"
+    Write-Host ""
+    Write-Host -ForegroundColor Yellow "Git Module Actions:"
+    Write-Host "  init           Initialize Git repo"
+    Write-Host "  remote         Configure remotes"
+    Write-Host "  push           Push to remote"
+    Write-Host ""
+    Write-Host -ForegroundColor Yellow "All Module Actions:"
+    Write-Host "  init           One-command init"
+    Write-Host ""
+}
+
+# ============================================================
+# Load Config
+# ============================================================
+function Load-Config {
+    if (-not (Test-Path $CONFIG_FILE)) {
+        Write-Log ERROR "Config file not found: $CONFIG_FILE"
+        Write-Log ERROR "Please copy env.example to .env first"
+        exit 1
+    }
+
+    $content = Get-Content $CONFIG_FILE -Raw
+
+    $lines = $content -split "`n" | ForEach-Object { $_.Trim() }
+    foreach ($line in $lines) {
+        if ($line -match "^#" -or [string]::IsNullOrWhiteSpace($line)) {
+            continue
+        }
+
+        if ($line -match "^([^=]+)=(.*)$") {
+            $key = $matches[1].Trim()
+            $value = $matches[2].Trim()
+
+            switch ($key) {
+                "GITHUB_ACCOUNTS" { $script:GITHUB_ACCOUNTS = $value }
+                "GITEE_ACCOUNTS" { $script:GITEE_ACCOUNTS = $value }
+                "GIT_USER_NAME" { $script:GIT_USER_NAME = $value }
+                "GIT_USER_EMAIL" { $script:GIT_USER_EMAIL = $value }
+            }
+        }
+    }
+
+    Write-Log DEBUG "Config loaded: $CONFIG_FILE"
+}
+
+# ============================================================
+# JSON Parsing Functions
+# ============================================================
+function Get-JsonAccounts {
+    param([string]$Json)
+
+    if ([string]::IsNullOrWhiteSpace($Json)) {
+        return @()
+    }
+
+    try {
+        $result = $Json | ConvertFrom-Json
+        if ($result -is [System.Array]) {
+            return $result
+        }
+        # Single object - wrap in array
+        return @($result)
+    }
+    catch {
+        Write-Log DEBUG "Failed to parse JSON: $_"
+        return @()
+    }
+}
+
+function Get-AccountInfo {
+    param(
+        [string]$Platform,
+        [string]$AccountsJson
+    )
+
+    $accounts = Get-JsonAccounts -Json $AccountsJson
+    if (@($accounts).Count -eq 0) {
+        return $null
+    }
+
+    foreach ($account in $accounts) {
+        if ($account.user -and $account.token -and $account.host) {
+            return @{
+                User = $account.user
+                Token = $account.token
+                Host = $account.host
+            }
+        }
+    }
+    return $null
+}
+
+# ============================================================
+# Get Account Config (for backward compatibility)
+# ============================================================
+function Get-AccountConfig {
+    param(
+        [string]$Platform,
+        [string]$AccountsVar
+    )
+
+    $accountsJson = Get-Variable -Name $AccountsVar -ValueOnly
+    $account = Get-AccountInfo -Platform $Platform -AccountsJson $accountsJson
+
+    if ($account) {
+        return "$($account.User):$($account.Token):$($account.Host)"
+    }
+    return ""
+}
+
+# ============================================================
+# Confirm Action
+# ============================================================
+function Confirm-Action {
+    param([string]$Message)
+
+    if ($script:DRY_RUN) {
+        Write-Log WARN "[DRY-RUN] Would execute: $Message"
+        return $false
+    }
+
+    if ($script:AUTO_YES) {
+        Write-Log INFO "${Message} [auto-confirmed]"
+        return $true
+    }
+
+    $answer = Read-Host -Prompt "$Message [y/N]"
+    return ($answer -eq "Y" -or $answer -eq "y")
+}
+
+# ============================================================
+# Assert-NotDryRun - Fail if running in DryRun mode for non-view operations
+# ============================================================
+function Assert-NotDryRun {
+    if ($script:DRY_RUN) {
+        Write-Log WARN "[DRY-RUN] Skipping actual execution"
+        throw "DryRun"
+    }
+}
+
+# ============================================================
+# Get Project Name
+# ============================================================
+function Get-ProjectName {
+    if ($REPO_NAME) {
+        return $REPO_NAME
+    }
+    return (Split-Path -Leaf (Get-Location))
+}
+
+# ============================================================
+# SSH Module
+# ============================================================
+function Invoke-SshModule {
+    param([string]$Operation)
+
+    switch ($Operation) {
+        "create" { SSH-Create }
+        "push" { SSH-Push }
+        "remove" { SSH-Remove }
+        "verify" { SSH-Verify }
+        "agent-start" { SSH-AgentStart }
+        "agent-status" { SSH-AgentStatus }
+        default {
+            Write-Log ERROR "Unknown SSH operation: $Operation"
+            Write-Log INFO "Supported SSH operations: create, push, remove, verify, agent-start, agent-status"
+            exit 1
+        }
+    }
+}
+
+# ============================================================
+# SSH Create
+# ============================================================
+function SSH-Create {
+    Write-Log INFO "Creating SSH key..."
+
+    if ($script:DRY_RUN) {
+        Write-Log WARN "[DRY-RUN] Would create SSH key for platform: $Platform"
+        return
+    }
+
+    if (-not $Platform) {
+        Write-Log ERROR "Please specify platform: -Platform github or -Platform gitee"
+        exit 1
+    }
+
+    $accountsVar = switch ($Platform) {
+        "github" { "GITHUB_ACCOUNTS" }
+        "gitee" { "GITEE_ACCOUNTS" }
+        default {
+            Write-Log ERROR "Unknown platform: $Platform"
+            exit 1
+        }
+    }
+
+    $accountLine = Get-AccountConfig -Platform $Platform -AccountsVar $accountsVar
+    if (-not $accountLine) {
+        Write-Log ERROR "No $Platform account config found"
+        exit 1
+    }
+
+    $parts = $accountLine -split ':'
+    $user = $parts[0]
+
+    $keyFile = "id_ed25519_${Platform}_${user}"
+    $keyPath = Join-Path $SSH_DIR $keyFile
+    $pubKeyPath = "${keyPath}.pub"
+
+    if (Test-Path $keyPath) {
+        if ($script:FORCE_MODE) {
+            Write-Log WARN "SSH key exists, overwriting..."
+            $backupSuffix = [DateTimeOffset]::Now.ToUnixTimeSeconds()
+            Move-Item -Path $keyPath -Destination "${keyPath}.backup_${backupSuffix}" -Force
+            Move-Item -Path $pubKeyPath -Destination "${pubKeyPath}.backup_${backupSuffix}" -Force
+        }
+        else {
+            Write-Log WARN "SSH key already exists: $keyPath"
+            Write-Log INFO "Use -Force to overwrite"
+            return
+        }
+    }
+
+    $sshDir = $SSH_DIR
+    if (-not (Test-Path $sshDir)) {
+        New-Item -ItemType Directory -Path $sshDir -Force | Out-Null
+    }
+
+    Write-Log INFO "Generating SSH key: $keyFile"
+    ssh-keygen -t ed25519 -f $keyPath -C $GIT_USER_EMAIL -N '""'
+
+    Write-Log SUCCESS "SSH key created: $keyPath"
+}
+
+# ============================================================
+# SSH Push
+# ============================================================
+function SSH-Push {
+    Write-Log INFO "Pushing SSH public key to platform..."
+
+    if ($script:DRY_RUN) {
+        Write-Log WARN "[DRY-RUN] Would push SSH key to platform: $Platform"
+        return
+    }
+
+    if (-not $Platform) {
+        Write-Log ERROR "Please specify platform: -Platform github or -Platform gitee"
+        exit 1
+    }
+
+    $accountsVar = switch ($Platform) {
+        "github" { "GITHUB_ACCOUNTS" }
+        "gitee" { "GITEE_ACCOUNTS" }
+        default {
+            Write-Log ERROR "Unknown platform: $Platform"
+            exit 1
+        }
+    }
+
+    $accountLine = Get-AccountConfig -Platform $Platform -AccountsVar $accountsVar
+    if (-not $accountLine) {
+        Write-Log ERROR "No $Platform account config found"
+        exit 1
+    }
+
+    $parts = $accountLine -split ':'
+    $user = $parts[0]
+    $token = $parts[1]
+    $targetHost = $parts[2]
+
+    $keyFile = "id_ed25519_${Platform}_${user}"
+    $pubKeyPath = Join-Path $SSH_DIR "${keyFile}.pub"
+
+    if (-not (Test-Path $pubKeyPath)) {
+        Write-Log ERROR "Public key not found: $pubKeyPath"
+        Write-Log INFO "Run: .\git-devops.ps1 ssh create -Platform $Platform"
+        exit 1
+    }
+
+    $keyContent = (Get-Content $pubKeyPath -Raw).Trim()
+    $title = New-SshKeyTitle -Platform $Platform -User $user
+
+    if ($Platform -eq "github") {
+        SSH-Push-GitHub -User $user -Token $token -Title $title -KeyContent $keyContent
+    }
+    else {
+        SSH-Push-Gitee -User $user -Token $token -Title $title -KeyContent $keyContent
+    }
+}
+
+# ============================================================
+# Push to GitHub
+# ============================================================
+function SSH-Push-GitHub {
+    param(
+        [string]$User,
+        [string]$Token,
+        [string]$Title,
+        [string]$KeyContent
+    )
+
+    $headers = @{
+        "Authorization" = "Bearer $Token"
+        "Accept" = "application/vnd.github.v3+json"
+        "Content-Type" = "application/json"
+    }
+
+    $body = @{
+        title = $Title
+        key = $KeyContent
+        type = "authentication_key"
+    } | ConvertTo-Json
+
+    try {
+        $response = Invoke-RestMethod -Uri "https://api.github.com/user/keys" `
+            -Method Post `
+            -Headers $headers `
+            -Body $body `
+            -TimeoutSec 30
+
+        if ($response.id) {
+            Write-Log SUCCESS "Added to GitHub (ID: $($response.id))"
+        }
+    }
+    catch {
+        $errorDetail = $_.Exception.Message
+        Write-Log ERROR "GitHub add failed: $errorDetail"
+        exit 1
+    }
+}
+
+# ============================================================
+# Push to Gitee
+# ============================================================
+function SSH-Push-Gitee {
+    param(
+        [string]$User,
+        [string]$Token,
+        [string]$Title,
+        [string]$KeyContent
+    )
+
+    $uri = "https://gitee.com/api/v5/user/keys"
+    $body = @{
+        access_token = $Token
+        title = $Title
+        key = $KeyContent
+    }
+
+    try {
+        $response = Invoke-RestMethod -Uri $uri `
+            -Method Post `
+            -Body $body `
+            -TimeoutSec 30
+
+        if ($response.id) {
+            Write-Log SUCCESS "Added to Gitee (ID: $($response.id))"
+        }
+    }
+    catch {
+        if ($_.Exception.Response) {
+            $statusCode = [int]$_.Exception.Response.StatusCode
+
+            if ($statusCode -eq 400 -or $statusCode -eq 422) {
+                Write-Log WARN "Gitee SSH key already exists, skipping"
+            }
+            else {
+                Write-Log ERROR "Gitee add failed (HTTP $statusCode)"
+                exit 1
+            }
+        }
+        else {
+            Write-Log ERROR "Gitee add failed: $($_.Exception.Message)"
+            exit 1
+        }
+    }
+}
+
+# ============================================================
+# SSH Verify
+# ============================================================
+function SSH-Verify {
+    Write-Log INFO "Verifying SSH connection..."
+
+    if (-not $Platform) {
+        Write-Log ERROR "Please specify platform: -Platform github or -Platform gitee"
+        exit 1
+    }
+
+    $accountsVar = switch ($Platform) {
+        "github" { "GITHUB_ACCOUNTS" }
+        "gitee" { "GITEE_ACCOUNTS" }
+        default {
+            Write-Log ERROR "Unknown platform: $Platform"
+            exit 1
+        }
+    }
+
+    $accountLine = Get-AccountConfig -Platform $Platform -AccountsVar $accountsVar
+    if (-not $accountLine) {
+        Write-Log ERROR "No $Platform account config found"
+        exit 1
+    }
+
+    $parts = $accountLine -split ':'
+    $user = $parts[0]
+    $targetHost = $parts[2]
+
+    Write-Log INFO "Testing $targetHost ..."
+
+    try {
+        $result = ssh -T -o StrictHostKeyChecking=no -o ConnectTimeout=10 "git@$targetHost" 2>&1
+
+        # GitHub: "Hi username! You've successfully authenticated..."
+        # Gitee: "Hi username! You've successfully connected to Gitee!"
+        # Both start with "Hi " - common success indicator
+        if ($result -match "^Hi\s+\w+") {
+            Write-Log SUCCESS "$targetHost SSH connection OK"
+        }
+        elseif ($result -match "(successfully authenticated|successfully connected)") {
+            Write-Log SUCCESS "$targetHost SSH connection OK"
+        }
+        else {
+            Write-Log WARN "$targetHost response: $result"
+            return 1
+        }
+    }
+    catch {
+        Write-Log WARN "$targetHost connection failed: $_"
+        return 1
+    }
+}
+
+# ============================================================
+# SSH Agent Start
+# ============================================================
+function SSH-AgentStart {
+    Write-Log INFO "Starting ssh-agent..."
+
+    $agentPid = Get-Process ssh-agent -ErrorAction SilentlyContinue | Select-Object -First 1 -ExpandProperty Id
+    if ($agentPid) {
+        Write-Log INFO "ssh-agent already running (PID: $agentPid)"
+    }
+    else {
+        $agentOutput = ssh-agent -s 2>&1
+        if ($LASTEXITCODE -eq 0) {
+            Write-Log SUCCESS "ssh-agent started"
+            if ($agentOutput -match 'SSH_AUTH_SOCK=([^;]+);') {
+                $env:SSH_AUTH_SOCK = $matches[1]
+            }
+            if ($agentOutput -match 'SSH_AGENT_PID=(\d+)') {
+                $env:SSH_AGENT_PID = $matches[1]
+            }
+        }
+        else {
+            Write-Log ERROR "ssh-agent start failed: $agentOutput"
+        }
+    }
+}
+
+# ============================================================
+# SSH Agent Status
+# ============================================================
+function SSH-AgentStatus {
+    Write-Log INFO "Checking ssh-agent status..."
+
+    $agentPid = Get-Process ssh-agent -ErrorAction SilentlyContinue | Select-Object -First 1 -ExpandProperty Id
+    if ($agentPid) {
+        Write-Log SUCCESS "ssh-agent running (PID: $agentPid)"
+
+        Write-Log INFO "Loaded keys:"
+        try {
+            $keys = ssh-add -l 2>&1
+            if ($keys -and $keys -notmatch "no keys") {
+                $keys | ForEach-Object { Write-Host "  $_" }
+            }
+            else {
+                Write-Log INFO "  No keys loaded"
+            }
+        }
+        catch {
+            Write-Log INFO "  No keys loaded"
+        }
+    }
+    else {
+        Write-Log WARN "ssh-agent not running"
+        Write-Log INFO "Run: .\git-devops.ps1 ssh agent-start"
+    }
+}
+
+# ============================================================
+# SSH Remove - Delete SSH key from platform
+# ============================================================
+function SSH-Remove {
+    Write-Log INFO "Removing SSH key from platform..."
+
+    if ($script:DRY_RUN) {
+        Write-Log WARN "[DRY-RUN] Would remove SSH key from platform: $Platform"
+        return
+    }
+
+    if (-not $Platform) {
+        Write-Log ERROR "Please specify platform: -Platform github or -Platform gitee"
+        exit 1
+    }
+
+    $accountsVar = if ($Platform -eq "github") { "GITHUB_ACCOUNTS" } else { "GITEE_ACCOUNTS" }
+
+    $accountLine = Get-AccountConfig -Platform $Platform -AccountsVar $accountsVar
+    if (-not $accountLine) {
+        Write-Log ERROR "No $Platform account config found"
+        exit 1
+    }
+
+    $parts = $accountLine -split ':'
+    $user = $parts[0]
+    $token = $parts[1]
+    $targetHost = $parts[2]
+
+    $keyFile = "id_ed25519_${Platform}_${user}"
+    $pubKeyPath = Join-Path $SSH_DIR "${keyFile}.pub"
+
+    if (-not (Test-Path $pubKeyPath)) {
+        Write-Log ERROR "Public key not found: $pubKeyPath"
+        Write-Log INFO "Run: .\git-devops.ps1 ssh create -Platform $Platform"
+        exit 1
+    }
+
+    $keyContent = (Get-Content $pubKeyPath -Raw).Trim()
+
+    if ($Platform -eq "github") {
+        SSH-Remove-GitHub -User $user -Token $token -KeyContent $keyContent
+    }
+    else {
+        SSH-Remove-Gitee -User $user -Token $token -KeyContent $keyContent
+    }
+}
+
+# ============================================================
+# SSH Remove from GitHub
+# ============================================================
+function SSH-Remove-GitHub {
+    param(
+        [string]$User,
+        [string]$Token,
+        [string]$KeyContent
+    )
+
+    Write-Log INFO "Fetching GitHub SSH keys..."
+
+    $headers = @{
+        "Authorization" = "Bearer $Token"
+        "Accept" = "application/vnd.github.v3+json"
+    }
+
+    $response = Invoke-WebRequest -Uri "https://api.github.com/user/keys" -Method GET -Headers $headers -TimeoutSec 30
+
+    if ($response.StatusCode -ne 200) {
+        Write-Log WARN "No GitHub SSH keys found"
+        return
+    }
+
+    $keys = $response.Content | ConvertFrom-Json
+
+    # Extract key content without comment for comparison
+    # Local key format: "ssh-ed25519 AAAA... comment", platform returns without comment
+    $keyParts = $KeyContent -split ' '
+    $keyWithoutComment = $keyParts[0] + ' ' + $keyParts[1]
+
+    # Find matching key by content
+    $keyId = $null
+    foreach ($key in $keys) {
+        if ($key.key -eq $keyWithoutComment) {
+            $keyId = $key.id
+            break
+        }
+    }
+
+    if (-not $keyId) {
+        Write-Log WARN "Local key not registered on GitHub, skipping"
+        return
+    }
+
+    Write-Log INFO "Deleting GitHub SSH key (ID: $keyId)..."
+
+    try {
+        $deleteResponse = Invoke-WebRequest -Uri "https://api.github.com/user/keys/$keyId" -Method DELETE -Headers $headers -TimeoutSec 30
+        if ($deleteResponse.StatusCode -eq 204 -or $deleteResponse.StatusCode -eq 200) {
+            Write-Log SUCCESS "GitHub SSH key deleted (ID: $keyId)"
+        }
+        else {
+            Write-Log ERROR "GitHub SSH key deletion failed: $($deleteResponse.StatusCode)"
+        }
+    }
+    catch {
+        Write-Log ERROR "GitHub SSH key deletion failed: $_"
+    }
+}
+
+# ============================================================
+# SSH Remove from Gitee
+# ============================================================
+function SSH-Remove-Gitee {
+    param(
+        [string]$User,
+        [string]$Token,
+        [string]$KeyContent
+    )
+
+    Write-Log INFO "Fetching Gitee SSH keys..."
+
+    $uri = "https://gitee.com/api/v5/user/keys?access_token=${Token}"
+
+    try {
+        $response = Invoke-WebRequest -Uri $uri -Method GET -TimeoutSec 30
+        $keys = $response.Content | ConvertFrom-Json
+    }
+    catch {
+        Write-Log WARN "No Gitee SSH keys found"
+        return
+    }
+
+    # Extract key content without comment for comparison
+    $keyParts = $KeyContent -split ' '
+    $keyWithoutComment = $keyParts[0] + ' ' + $keyParts[1]
+
+    # Find matching key by content
+    $keyId = $null
+    foreach ($key in $keys) {
+        if ($key.key -eq $keyWithoutComment) {
+            $keyId = $key.id
+            break
+        }
+    }
+
+    if (-not $keyId) {
+        Write-Log WARN "Local key not registered on Gitee, skipping"
+        return
+    }
+
+    Write-Log INFO "Deleting Gitee SSH key (ID: $keyId)..."
+
+    try {
+        $deleteUri = "https://gitee.com/api/v5/user/keys/${keyId}?access_token=${Token}"
+        $deleteResponse = Invoke-WebRequest -Uri $deleteUri -Method DELETE -TimeoutSec 30
+        if ($deleteResponse.StatusCode -eq 204 -or $deleteResponse.StatusCode -eq 200) {
+            Write-Log SUCCESS "Gitee SSH key deleted (ID: $keyId)"
+        }
+        else {
+            Write-Log ERROR "Gitee SSH key deletion failed: $($deleteResponse.StatusCode)"
+        }
+    }
+    catch {
+        Write-Log ERROR "Gitee SSH key deletion failed: $_"
+    }
+}
+
+# ============================================================
+# Repo Module
+# ============================================================
+function Invoke-RepoModule {
+    param([string]$Operation)
+
+    switch ($Operation) {
+        "create" { Repo-Create }
+        "delete" { Repo-Delete }
+        default {
+            Write-Log ERROR "Unknown Repo operation: $Operation"
+            Write-Log INFO "Supported Repo operations: create, delete"
+            exit 1
+        }
+    }
+}
+
+# ============================================================
+# Repo Create
+# ============================================================
+function Repo-Create {
+    Write-Log INFO "Creating remote repo..."
+
+    if ($script:DRY_RUN) {
+        Write-Log WARN "[DRY-RUN] Would create repo on platform: $Platform"
+        return
+    }
+
+    if (-not $Platform) {
+        Write-Log ERROR "Please specify platform: -Platform github or -Platform gitee"
+        exit 1
+    }
+
+    $accountsVar = switch ($Platform) {
+        "github" { "GITHUB_ACCOUNTS" }
+        "gitee" { "GITEE_ACCOUNTS" }
+        default {
+            Write-Log ERROR "Unknown platform: $Platform"
+            exit 1
+        }
+    }
+
+    $accountLine = Get-AccountConfig -Platform $Platform -AccountsVar $accountsVar
+    if (-not $accountLine) {
+        Write-Log ERROR "No $Platform account config found"
+        exit 1
+    }
+
+    $parts = $accountLine -split ':'
+    $user = $parts[0]
+    $token = $parts[1]
+
+    $repoName = Get-ProjectName
+
+    if ($Platform -eq "github") {
+        Repo-Create-GitHub -User $user -Token $token -RepoName $repoName
+    }
+    else {
+        Repo-Create-Gitee -User $user -Token $token -RepoName $repoName
+    }
+}
+
+# ============================================================
+# Create GitHub Repo
+# ============================================================
+function Repo-Create-GitHub {
+    param(
+        [string]$User,
+        [string]$Token,
+        [string]$RepoName
+    )
+
+    $headers = @{
+        "Authorization" = "Bearer $Token"
+        "Accept" = "application/vnd.github.v3+json"
+        "Content-Type" = "application/json"
+    }
+
+    $body = @{
+        name = $RepoName
+        private = $false
+    } | ConvertTo-Json
+
+    try {
+        $response = Invoke-RestMethod -Uri "https://api.github.com/user/repos" `
+            -Method Post `
+            -Headers $headers `
+            -Body $body `
+            -TimeoutSec 30
+
+        if ($response.id) {
+            Write-Log SUCCESS "GitHub repo created: $RepoName"
+        }
+    }
+    catch {
+        if ($_.Exception.Response) {
+            $statusCode = $_.Exception.Response.StatusCode
+            $responseContent = $_.Exception.Response.Content.ReadAsStringAsync().Result
+
+            if ($statusCode -eq 422) {
+                Write-Log WARN "GitHub repo already exists: $RepoName"
+            }
+            elseif ($statusCode -eq 301) {
+                Write-Log WARN "GitHub API redirect (HTTP 301). Response: $responseContent"
+            }
+            elseif ($statusCode -eq 403) {
+                Write-Log ERROR "GitHub API forbidden (HTTP 403) - check token permissions"
+                exit 1
+            }
+            elseif ($statusCode -eq 401) {
+                Write-Log ERROR "GitHub API unauthorized (HTTP 401) - check token validity"
+                exit 1
+            }
+            else {
+                Write-Log ERROR "GitHub repo creation failed (HTTP $statusCode)"
+                Write-Log DEBUG "Response: $responseContent"
+                exit 1
+            }
+        }
+        else {
+            Write-Log ERROR "GitHub repo creation failed: $($_.Exception.Message)"
+            exit 1
+        }
+    }
+}
+
+# ============================================================
+# Create Gitee Repo
+# ============================================================
+function Repo-Create-Gitee {
+    param(
+        [string]$User,
+        [string]$Token,
+        [string]$RepoName
+    )
+
+    $uri = "https://gitee.com/api/v5/user/repos"
+    $body = @{
+        access_token = $Token
+        name = $RepoName
+        private = $false
+    }
+
+    try {
+        $response = Invoke-RestMethod -Uri $uri `
+            -Method Post `
+            -Body $body `
+            -TimeoutSec 30
+
+        if ($response.id) {
+            Write-Log SUCCESS "Gitee repo created: $RepoName"
+        }
+    }
+    catch {
+        if ($_.Exception.Response) {
+            $statusCode = [int]$_.Exception.Response.StatusCode
+
+            if ($statusCode -eq 400 -or $statusCode -eq 422) {
+                Write-Log WARN "Gitee repo already exists: $RepoName"
+            }
+            else {
+                Write-Log ERROR "Gitee repo creation failed (HTTP $statusCode)"
+                exit 1
+            }
+        }
+        else {
+            Write-Log ERROR "Gitee repo creation failed: $($_.Exception.Message)"
+            exit 1
+        }
+    }
+}
+
+# ============================================================
+# Repo Delete
+# ============================================================
+function Repo-Delete {
+    Write-Log WARN "Deleting remote repo..."
+
+    if ($script:DRY_RUN) {
+        Write-Log WARN "[DRY-RUN] Would delete repo on platform: $Platform"
+        return
+    }
+
+    if (-not $Platform) {
+        Write-Log ERROR "Please specify platform: -Platform github or -Platform gitee"
+        exit 1
+    }
+
+    if (-not (Confirm-Action -Message "Delete remote repo?")) {
+        Write-Log INFO "Cancelled"
+        return
+    }
+
+    $accountsVar = switch ($Platform) {
+        "github" { "GITHUB_ACCOUNTS" }
+        "gitee" { "GITEE_ACCOUNTS" }
+        default {
+            Write-Log ERROR "Unknown platform: $Platform"
+            exit 1
+        }
+    }
+
+    $accountLine = Get-AccountConfig -Platform $Platform -AccountsVar $accountsVar
+    if (-not $accountLine) {
+        Write-Log ERROR "No $Platform account config found"
+        exit 1
+    }
+
+    $parts = $accountLine -split ':'
+    $user = $parts[0]
+    $token = $parts[1]
+
+    $repoName = Get-ProjectName
+
+    if ($Platform -eq "github") {
+        Repo-Delete-GitHub -User $user -Token $token -RepoName $repoName
+    }
+    else {
+        Repo-Delete-Gitee -User $user -Token $token -RepoName $repoName
+    }
+}
+
+# ============================================================
+# Delete GitHub Repo
+# ============================================================
+function Repo-Delete-GitHub {
+    param(
+        [string]$User,
+        [string]$Token,
+        [string]$RepoName
+    )
+
+    $headers = @{
+        "Authorization" = "Bearer $Token"
+        "Accept" = "application/vnd.github.v3+json"
+    }
+
+    try {
+        Invoke-WebRequest -Uri "https://api.github.com/repos/$User/$RepoName" `
+            -Method Delete `
+            -Headers $headers `
+            -TimeoutSec 30
+
+        Write-Log SUCCESS "GitHub repo deleted: $RepoName"
+    }
+    catch {
+        if ($_.Exception.Response) {
+            $statusCode = $_.Exception.Response.StatusCode
+            Write-Log ERROR "GitHub repo deletion failed (HTTP $statusCode)"
+        }
+        else {
+            Write-Log ERROR "GitHub repo deletion failed: $($_.Exception.Message)"
+        }
+        exit 1
+    }
+}
+
+# ============================================================
+# Delete Gitee Repo
+# ============================================================
+function Repo-Delete-Gitee {
+    param(
+        [string]$User,
+        [string]$Token,
+        [string]$RepoName
+    )
+
+    $uri = "https://gitee.com/api/v5/repos/$User/$RepoName?access_token=$Token"
+
+    try {
+        $response = Invoke-WebRequest -Uri $uri `
+            -Method Delete `
+            -TimeoutSec 30
+
+        if ($response.StatusCode -eq 204 -or $response.StatusCode -eq 200) {
+            Write-Log SUCCESS "Gitee repo deleted: $RepoName"
+        }
+    }
+    catch {
+        if ($_.Exception.Response) {
+            $statusCode = $_.Exception.Response.StatusCode
+            Write-Log ERROR "Gitee repo deletion failed (HTTP $statusCode)"
+        }
+        else {
+            Write-Log ERROR "Gitee repo deletion failed: $($_.Exception.Message)"
+        }
+        exit 1
+    }
+}
+
+# ============================================================
+# Git Module
+# ============================================================
+function Invoke-GitModule {
+    param([string]$Operation)
+
+    switch ($Operation) {
+        "init" { Git-Init }
+        "remote" { Git-Remote }
+        "push" { Git-Push }
+        default {
+            Write-Log ERROR "Unknown Git operation: $Operation"
+            Write-Log INFO "Supported Git operations: init, remote, push"
+            exit 1
+        }
+    }
+}
+
+# ============================================================
+# Git Init
+# ============================================================
+function Git-Init {
+    Write-Log INFO "Initializing Git repo..."
+
+    if (-not (Test-Path ".git")) {
+        git init -b main
+        Write-Log SUCCESS "Git repo created"
+    }
+    else {
+        Write-Log INFO "Git repo already exists, skipping"
+
+        $branches = git branch | Out-String
+        if ($branches -match "master") {
+            git branch -m master main
+            Write-Log INFO "Branch renamed master -> main"
+        }
+    }
+
+    if ($GIT_USER_NAME) {
+        git config --local user.name $GIT_USER_NAME
+        Write-Log DEBUG "Git user.name: $GIT_USER_NAME"
+    }
+
+    if ($GIT_USER_EMAIL) {
+        git config --local user.email $GIT_USER_EMAIL
+        Write-Log DEBUG "Git user.email: $GIT_USER_EMAIL"
+    }
+}
+
+# ============================================================
+# Git Remote
+# ============================================================
+function Git-Remote {
+    Write-Log INFO "Configuring Git remotes..."
+
+    if (-not (Test-Path ".git")) {
+        Write-Log ERROR "Git repo not initialized"
+        Write-Log INFO "Run: .\git-devops.ps1 git init"
+        exit 1
+    }
+
+    $project = Get-ProjectName
+
+    $existingRemotes = git remote | Out-String
+    if ($existingRemotes) {
+        $existingRemotes -split "`n" | ForEach-Object {
+            $remote = $_.Trim()
+            if ($remote) {
+                git remote remove $remote 2>$null
+            }
+        }
+    }
+
+    $githubAccount = Get-AccountConfig -Platform "github" -AccountsVar "GITHUB_ACCOUNTS"
+    if ($githubAccount) {
+        $parts = $githubAccount -split ':'
+        $user = $parts[0]
+        $targetHost = $parts[2]
+        $remoteUrl = "git@${targetHost}:${user}/$project.git"
+        git remote add github $remoteUrl
+        Write-Log SUCCESS "GitHub remote: github -> $remoteUrl"
+    }
+
+    $giteeAccount = Get-AccountConfig -Platform "gitee" -AccountsVar "GITEE_ACCOUNTS"
+    if ($giteeAccount) {
+        $parts = $giteeAccount -split ':'
+        $user = $parts[0]
+        $targetHost = $parts[2]
+        $remoteUrl = "git@${targetHost}:${user}/$project.git"
+        git remote add gitee $remoteUrl
+        Write-Log SUCCESS "Gitee remote: gitee -> $remoteUrl"
+    }
+
+    $hasGithub = git remote | Out-String -Stream | Where-Object { $_ -eq "github" } | Measure-Object | Select-Object -ExpandProperty Count
+    $hasGitee = git remote | Out-String -Stream | Where-Object { $_ -eq "gitee" } | Measure-Object | Select-Object -ExpandProperty Count
+
+    if ($hasGithub -gt 0 -and $hasGitee -gt 0) {
+        git config alias.pushall "!git push github main; git push gitee main"
+        Write-Log SUCCESS "pushall alias configured"
+    }
+    elseif ($hasGithub -gt 0) {
+        git config alias.pushall "!git push github main"
+        Write-Log INFO "pushall alias configured (GitHub only)"
+    }
+    elseif ($hasGitee -gt 0) {
+        git config alias.pushall "!git push gitee main"
+        Write-Log INFO "pushall alias configured (Gitee only)"
+    }
+}
+
+# ============================================================
+# Git Push
+# ============================================================
+function Git-Push {
+    Write-Log INFO "Pushing to remote..."
+
+    if (-not (Test-Path ".git")) {
+        Write-Log ERROR "Git repo not initialized"
+        exit 1
+    }
+
+    if (-not $Platform) {
+        git pushall
+    }
+    else {
+        switch ($Platform) {
+            "github" { git push github main }
+            "gitee" { git push gitee main }
+            default {
+                Write-Log ERROR "Unknown platform: $Platform"
+                exit 1
+            }
+        }
+    }
+}
+
+# ============================================================
+# All Module - One Command Init
+# ============================================================
+function Invoke-AllModule {
+    param([string]$Operation)
+
+    switch ($Operation) {
+        "init" { All-Init }
+        default {
+            Write-Log ERROR "Unknown All operation: $Operation"
+            Write-Log INFO "Supported All operations: init"
+            exit 1
+        }
+    }
+}
+
+# ============================================================
+# One-Command Init
+# ============================================================
+function All-Init {
+    Write-Log INFO "========================================"
+    Write-Log INFO "Git DevOps One-Command Init"
+    Write-Log INFO "========================================"
+    Write-Host ""
+
+    foreach ($p in @("github", "gitee")) {
+        $savedPlatform = $Platform
+        $Platform = $p
+
+        $accountsVar = if ($p -eq "github") { "GITHUB_ACCOUNTS" } else { "GITEE_ACCOUNTS" }
+
+        $accountLine = Get-AccountConfig -Platform $p -AccountsVar $accountsVar
+
+        if (-not $accountLine) {
+            Write-Log WARN "Skipping platform ${p}: no account config"
+            $Platform = $savedPlatform
+            continue
+        }
+
+        $parts = $accountLine -split ':'
+        $user = $parts[0]
+
+        $keyFile = "id_ed25519_${p}_${user}"
+        $keyPath = Join-Path $SSH_DIR $keyFile
+
+        if (-not (Test-Path $keyPath)) {
+            Write-Log INFO "[$p] Creating SSH key..."
+            SSH-Create
+        }
+        else {
+            Write-Log INFO "[$p] SSH key exists, skipping"
+        }
+
+        $Platform = $savedPlatform
+    }
+
+    Write-Host ""
+
+    foreach ($p in @("github", "gitee")) {
+        $savedPlatform = $Platform
+        $Platform = $p
+
+        $accountsVar = if ($p -eq "github") { "GITHUB_ACCOUNTS" } else { "GITEE_ACCOUNTS" }
+
+        $accountLine = Get-AccountConfig -Platform $p -AccountsVar $accountsVar
+
+        if (-not $accountLine) {
+            Write-Log WARN "Skipping platform ${p}: no account config"
+            $Platform = $savedPlatform
+            continue
+        }
+
+        Write-Log INFO "[$p] Creating remote repo..."
+        try {
+            Repo-Create
+        }
+        catch {
+            Write-Log WARN "[$p] Repo may already exist"
+        }
+
+        $Platform = $savedPlatform
+    }
+
+    Write-Host ""
+
+    Write-Log INFO "Initializing Git repo..."
+    Git-Init
+
+    Write-Host ""
+
+    Write-Log INFO "Configuring Git remotes..."
+    Git-Remote
+
+    Write-Host ""
+    Write-Log SUCCESS "One-command init complete!"
+    Write-Log INFO "Next steps:"
+    Write-Log INFO "  git add ."
+    Write-Log INFO '  git commit -m "init"'
+    Write-Log INFO "  git pushall"
+}
+
+# ============================================================
+# Clean Module
+# ============================================================
+function Invoke-CleanModule {
+    param([string]$Operation)
+
+    switch ($Operation) {
+        "local" { Clean-Local }
+        "reset" { Clean-Reset }
+        "keys" { Clean-Keys }
+        "repos" { Clean-Repos }
+        "full" { Clean-Full }
+        "all" { Clean-Full }
+        default {
+            Write-Log ERROR "Unknown Clean operation: $Operation"
+            Write-Log INFO "Supported Clean operations: local, reset, keys, repos, full, all"
+            Write-Log INFO "  local/reset - Clean local Git config only"
+            Write-Log INFO "  keys        - Remove platform SSH keys"
+            Write-Log INFO "  repos       - Remove platform repos"
+            Write-Log INFO "  full/all    - Clean all (repos + SSH keys + local config)"
+            exit 1
+        }
+    }
+}
+
+# ============================================================
+# Clean Local (clean git config, keep .git)
+# ============================================================
+function Clean-Local {
+    Write-Log WARN "Cleaning local Git config (keeping .git)..."
+
+    if (-not (Test-Path ".git")) {
+        Write-Log INFO "Not a git repo, nothing to clean"
+        return
+    }
+
+    if (-not $script:AUTO_YES -and -not (Confirm-Action -Message "Clean local Git config (keep .git)?")) {
+        Write-Log INFO "Cancelled"
+        return
+    }
+
+    $existingRemotes = git remote | Out-String
+    if ($existingRemotes) {
+        $existingRemotes -split "`n" | ForEach-Object {
+            $remote = $_.Trim()
+            if ($remote) {
+                git remote remove $remote 2>$null
+                Write-Log INFO "Removed remote: $remote"
+            }
+        }
+    }
+
+    git config --local --unset alias.pushall 2>$null
+
+    Write-Log SUCCESS "Local Git config cleaned (git history preserved)"
+}
+
+# ============================================================
+# Clean Reset (delete .git directory)
+# ============================================================
+function Clean-Reset {
+    Write-Log WARN "Resetting local Git repo (delete .git)..."
+
+    if (-not (Test-Path ".git")) {
+        Write-Log INFO "Not a git repo, nothing to reset"
+        return
+    }
+
+    if (-not $script:AUTO_YES -and -not (Confirm-Action -Message "Delete .git directory completely?")) {
+        Write-Log INFO "Cancelled"
+        return
+    }
+
+    Remove-Item -Path ".git" -Recurse -Force
+    Write-Log SUCCESS ".git directory deleted"
+}
+
+# ============================================================
+# Clean Keys (remove platform SSH keys and local keys)
+# ============================================================
+function Clean-Keys {
+    Write-Log INFO "Cleaning platform SSH keys..."
+
+    if (-not (Confirm-Action -Message "Remove platform SSH keys and local keys?")) {
+        Write-Log INFO "Cancelled"
+        return
+    }
+
+    if (-not $Platform -or $Platform -eq "all") {
+        Write-Log INFO "Removing GitHub SSH key..."
+        $script:Platform = "github"
+        SSH-Remove
+        Remove-LocalSshKey -Platform "github"
+
+        Write-Log INFO "Removing Gitee SSH key..."
+        $script:Platform = "gitee"
+        SSH-Remove
+        Remove-LocalSshKey -Platform "gitee"
+    }
+    else {
+        SSH-Remove
+        Remove-LocalSshKey -Platform $Platform
+    }
+
+    Write-Log SUCCESS "SSH keys cleaned (platform + local)"
+}
+
+# ============================================================
+# Remove Local SSH Key
+# ============================================================
+function Remove-LocalSshKey {
+    param([string]$Platform)
+
+    $accountsVar = if ($Platform -eq "github") { "GITHUB_ACCOUNTS" } else { "GITEE_ACCOUNTS" }
+    $accountLine = Get-AccountConfig -Platform $Platform -AccountsVar $accountsVar
+    if (-not $accountLine) {
+        return
+    }
+
+    $parts = $accountLine -split ':'
+    $user = $parts[0]
+
+    $keyFile = "id_ed25519_${Platform}_${user}"
+    $keyPath = Join-Path $SSH_DIR $keyFile
+    $pubKeyPath = "${keyPath}.pub"
+
+    if (Test-Path $keyPath) {
+        try {
+            Remove-Item -Path $keyPath -Force -ErrorAction Stop
+            Remove-Item -Path $pubKeyPath -Force -ErrorAction Stop
+            Write-Log SUCCESS "Local SSH key deleted: $keyPath"
+        }
+        catch {
+            Write-Log WARN "Failed to delete local SSH key: $keyPath"
+        }
+    }
+    else {
+        Write-Log INFO "Local SSH key not found: $keyPath"
+    }
+}
+
+# ============================================================
+# Clean Repos (remove platform repos)
+# ============================================================
+function Clean-Repos {
+    Write-Log INFO "Cleaning platform repos..."
+
+    if (-not (Test-Path ".git")) {
+        Write-Log ERROR "Git repo not initialized. Run git init first."
+        exit 1
+    }
+
+    if (-not (Confirm-Action -Message "Remove platform repos?")) {
+        Write-Log INFO "Cancelled"
+        return
+    }
+
+    $repoName = Split-Path -Leaf (Get-Location)
+
+    if (-not $Platform -or $Platform -eq "all") {
+        Write-Log INFO "Removing GitHub repo: $repoName"
+        $script:Platform = "github"
+        $script:RepoName = $repoName
+        Repo-Delete
+
+        Write-Log INFO "Removing Gitee repo: $repoName"
+        $script:Platform = "gitee"
+        $script:RepoName = $repoName
+        Repo-Delete
+    }
+    else {
+        $script:RepoName = $repoName
+        Repo-Delete
+    }
+
+    Write-Log SUCCESS "Platform repos cleaned"
+}
+
+# ============================================================
+# Clean Full (clean everything)
+# ============================================================
+function Clean-Full {
+    Write-Host ""
+    Write-Host "========================================" -ForegroundColor Cyan
+    Write-Host "Full Environment Cleanup" -ForegroundColor Cyan
+    Write-Host "========================================" -ForegroundColor Cyan
+    Write-Host ""
+
+    if (-not (Confirm-Action -Message "This will: 1) Remove platform repos, 2) Remove platform SSH keys, 3) Clean local Git config, 4) Delete .git directory")) {
+        Write-Log INFO "Cancelled"
+        return
+    }
+
+    $repoName = Split-Path -Leaf (Get-Location)
+
+    # Step 1: Clean repos
+    Write-Host ""
+    Write-Log INFO "Step 1/4: Cleaning platform repos..."
+    if (Test-Path ".git") {
+        $script:Platform = "github"
+        $script:RepoName = $repoName
+        Repo-Delete 2>$null
+
+        $script:Platform = "gitee"
+        $script:RepoName = $repoName
+        Repo-Delete 2>$null
+    }
+
+    # Step 2: Clean SSH keys
+    Write-Host ""
+    Write-Log INFO "Step 2/4: Cleaning SSH keys..."
+    $script:Platform = "github"
+    SSH-Remove 2>$null
+
+    $script:Platform = "gitee"
+    SSH-Remove 2>$null
+
+    # Step 3: Clean local Git config
+    Write-Host ""
+    Write-Log INFO "Step 3/4: Cleaning local Git config..."
+    if (Test-Path ".git") {
+        $existingRemotes = git remote 2>$null | Out-String
+        if ($existingRemotes) {
+            $existingRemotes -split "`n" | ForEach-Object {
+                $remote = $_.Trim()
+                if ($remote) {
+                    git remote remove $remote 2>$null
+                    Write-Log INFO "Removed remote: $remote"
+                }
+            }
+        }
+        git config --local --unset alias.pushall 2>$null
+    }
+
+    # Step 4: Delete .git directory
+    Write-Host ""
+    Write-Log INFO "Step 4/4: Deleting .git directory..."
+    if (Test-Path ".git") {
+        Remove-Item -Path ".git" -Recurse -Force
+        Write-Log SUCCESS ".git directory deleted"
+    }
+    else {
+        Write-Log INFO ".git directory not found, skipping"
+    }
+
+    Write-Host ""
+    Write-Log SUCCESS "Full cleanup complete!"
+    Write-Log INFO "Environment reset to initial state"
+}
+
+# ============================================================
+# Main
+# ============================================================
+function Main {
+    if ($script:HELP_MODE) {
+        Show-Help
+        exit 0
+    }
+
+    # Show DryRun status
+    if ($script:DRY_RUN) {
+        Write-Log WARN "[DRY-RUN MODE] Operations will be previewed but not executed"
+    }
+
+    # Handle --Clean parameter (clean local git config, keep .git, do NOT init)
+    if ($script:CLEAN_MODE) {
+        if ($script:DRY_RUN) {
+            Write-Log WARN "[DRY-RUN] Would execute: Clean local Git config (keep .git)"
+            exit 0
+        }
+        Load-Config
+        Invoke-CleanModule -Operation "local"
+        exit 0
+    }
+
+    # Handle --Reset parameter (delete .git directory completely)
+    if ($script:RESET_MODE) {
+        if ($script:DRY_RUN) {
+            Write-Log WARN "[DRY-RUN] Would execute: Delete .git directory"
+            exit 0
+        }
+        Load-Config
+        Invoke-CleanModule -Operation "reset"
+        exit 0
+    }
+
+    if (-not $Module -or -not $Action) {
+        Show-Help
+        exit 0
+    }
+
+    Load-Config
+
+    Write-Log DEBUG "Module: $Module, Action: $Action, Platform: $Platform"
+
+    switch ($Module.ToLower()) {
+        "ssh" { Invoke-SshModule -Operation $Action.ToLower() }
+        "repo" { Invoke-RepoModule -Operation $Action.ToLower() }
+        "git" { Invoke-GitModule -Operation $Action.ToLower() }
+        "all" { Invoke-AllModule -Operation $Action.ToLower() }
+        "clean" { Invoke-CleanModule -Operation $Action.ToLower() }
+        default {
+            Write-Log ERROR "Unknown module: $Module"
+            Show-Help
+            exit 1
+        }
+    }
+}
+
+# ============================================================
+# Execute
+# ============================================================
+Main

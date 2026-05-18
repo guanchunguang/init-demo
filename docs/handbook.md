@@ -1,397 +1,351 @@
-# Git DevOps CLI 使用手册
+# Git-DevOps 使用手册
 
-> 本手册面向两种用户场景：新环境初始化 和 现有环境维护
+**项目：** init-demo
+**版本：** 1.0
+**更新日期：** 2026-05-18
+**支持平台：** Windows (PowerShell) / Linux (Bash)
+**支持 Git 平台：** GitHub + Gitee
 
 ---
 
-## 场景一：新环境初始化
+## 一、快速开始
 
-**适用用户**：首次使用 Git DevOps CLI 的用户，电脑上没有配置过 Git 环境
+### 1.1 环境要求
 
-**目标**：从零开始，完成 SSH 配置、仓库创建、本地 Git 初始化
+| 组件 | Windows 要求 | Linux 要求 |
+|------|-------------|------------|
+| Git | 已安装并配置 | 已安装并配置 |
+| SSH | Git Bash 或 WSL | OpenSSH |
+| 配置文件 | `.env` 文件 | `.env` 文件 |
 
-### 操作流程
+### 1.2 配置文件 (.env)
 
-#### Step 1: 准备工作目录
+```env
+# GitHub 账户配置
+GITHUB_ACCOUNTS=[{"user":"你的用户名","host":"github-你的用户名","token":"ghp_你的token"}]
+
+# Gitee 账户配置
+GITEE_ACCOUNTS=[{"user":"你的用户名","host":"gitee-你的用户名","token":"你的token"}]
+
+# Git 用户配置
+GIT_USER_NAME=你的用户名
+GIT_USER_EMAIL=你的邮箱
+```
+
+**获取 Token 方法：**
+- GitHub: Settings → Developer settings → Personal access tokens → Generate new token
+- Gitee: 个人设置 → 私人令牌 → 创建私人令牌
+
+---
+
+## 二、两种场景下的完整流程
+
+### 场景 A：新电脑（无 Git 环境）
+
+**目标：** 在空目录初始化项目并推送到 GitHub 和 Gitee
 
 ```powershell
-# Windows PowerShell
-mkdir test
-cd test
+# 1. 进入项目目录
+cd D:\VSCodeWorkSpace\my-project
 
-# Linux/macOS Bash
-mkdir test
-cd test
-```
+# 2. 配置 Git 用户信息（如果还没配置）
+git config --global user.name "你的用户名"
+git config --global user.email "你的邮箱"
 
-**目的**：创建项目目录
+# 3. 创建 SSH 密钥（如果还没有）
+.\git-devops.ps1 ssh create -p github
+.\git-devops.ps1 ssh create -p gitee
 
----
+# 4. 上传 SSH 公钥到平台（如果还没有）
+.\git-devops.ps1 ssh push -p github
+.\git-devops.ps1 ssh push -p gitee
 
-#### Step 2: 复制配置文件
+# 5. 验证 SSH 连接
+.\git-devops.ps1 ssh verify -p github
+.\git-devops.ps1 ssh verify -p gitee
 
-将 `.env.example` 复制为 `.env`，并配置你的账户信息：
+# 6. 初始化 Git 仓库
+.\git-devops.ps1 git init
 
-```ini
-GITHUB_ACCOUNTS=[{"user":"your-username","host":"github-yourname","token":"ghp_xxx"}]
-GITEE_ACCOUNTS=[{"user":"your-username","host":"gitee-yourname","token":"xxx"}]
-GIT_USER_NAME=your-username
-GIT_USER_EMAIL=your@email.com
-```
+# 7. 创建远程仓库
+.\git-devops.ps1 repo create -p github -n my-project
+.\git-devops.ps1 repo create -p gitee -n my-project
 
-**目的**：存储平台 Token 和 Git 用户信息
+# 8. 配置远程仓库
+.\git-devops.ps1 git remote
 
----
-
-#### Step 3: 配置 SSH（如果还没有配置过）
-
-SSH 配置需要三个步骤：创建密钥、推送公钥、验证连接
-
-```powershell
-# Windows
-.\git-devops.ps1 ssh create -p github -f    # 创建 SSH 密钥对
-.\git-devops.ps1 ssh push -p github          # 推送公钥到平台
-.\git-devops.ps1 ssh verify -p github        # 验证 SSH 连接
-
-# Linux/macOS
-./git-devops.sh ssh create -p github -f    # 创建 SSH 密钥对
-./git-devops.sh ssh push -p github          # 推送公钥到平台
-./git-devops.sh ssh verify -p github        # 验证 SSH 连接
-```
-
-**目的**：
-- `ssh create` - 生成 SSH 密钥对
-- `ssh push` - 将公钥添加到 GitHub/Gitee
-- `ssh verify` - 验证 SSH 连接是否正常
-
-**预期输出**：
-```
-# ssh create
-[INFO] Creating SSH key...
-[OK] SSH key created: ~/.ssh/id_ed25519_github_yourname
-
-# ssh push
-[INFO] Pushing SSH public key to platform...
-[OK] Added to GitHub (ID: xxxxxxxx)
-
-# ssh verify
-[INFO] Verifying SSH connection...
-[OK] github-yourname SSH connection OK
-```
-
----
-
-#### Step 4: 一键初始化（创建仓库 + 配置 Git）
-
-```powershell
-# Windows - 单平台
-.\git-devops.ps1 all init -p github -y
-
-# Windows - 双平台
-.\git-devops.ps1 all init -p github -p gitee -y
-
-# Linux/macOS - 单平台
-./git-devops.sh all init -p github -y
-
-# Linux/macOS - 双平台
-./git-devops.sh all init -p github -p gitee -y
-```
-
-**目的**：
-- 在 GitHub/Gitee 创建远程仓库
-- 初始化本地 Git 仓库
-- 配置双平台 remote
-- 设置 `pushall` 别名
-
-**预期输出**：
-```
-[INFO] ========================================
-[INFO] Git DevOps One-Command Init
-[INFO] ========================================
-[INFO] [github] SSH key exists, skipping
-[INFO] [github] Creating remote repo...
-[OK] GitHub repo created: test
-[INFO] [github] Initializing Git repo...
-[OK] Git repo created
-[INFO] [github] Configuring remotes...
-[OK] GitHub remote: github -> git@github-yourname:username/test.git
-[OK] Gitee remote: gitee -> git@gitee-yourname:username/test.git
-[OK] pushall alias configured
-```
-
----
-
-#### Step 5: 提交代码
-
-```bash
-echo "# test" > README.md
+# 9. 添加代码并提交
+echo "# My Project" > README.md
 git add .
 git commit -m "Initial commit"
-git pushall
+
+# 10. 推送到所有远程
+.\git-devops.ps1 git push
 ```
 
-**目的**：验证完整流程，提交并推送到双平台
+**或者使用一键初始化（推荐）：**
+
+```powershell
+cd D:\VSCodeWorkSpace\my-project
+echo "# My Project" > README.md
+.\git-devops.ps1 all init -y
+.\git-devops.ps1 git push
+```
 
 ---
 
-## 场景二：现有环境维护
+### 场景 B：已有 Git 环境的电脑
 
-**适用用户**：已有 Git 环境，需要重新配置或清理的用户
-
-**目标**：清理现有配置、重新初始化、或者完全重置
-
-### 操作流程
-
-#### 场景 2A：清理本地配置（保留 .git 历史）
-
-**适用情况**：
-- 想保留 git 历史，只清理 remote 配置
-- 重新开始但不想丢失提交记录
+**目标：** 已有本地仓库，想快速同步到 GitHub 和 Gitee
 
 ```powershell
-# Windows
+# 1. 进入已有项目目录
+cd D:\VSCodeWorkSpace\existing-project
+
+# 2. 一键初始化（自动完成 SSH/Repo/Remote 配置）
+.\git-devops.ps1 all init -y
+
+# 3. 推送到远程
+.\git-devops.ps1 git push
+```
+
+**如果只想添加新的远程平台：**
+
+```powershell
+# 添加 GitHub（如果还没有）
+.\git-devops.ps1 ssh create -p github
+.\git-devops.ps1 ssh push -p github
+.\git-devops.ps1 repo create -p github -n project-name
+git remote add github git@github-你的用户名:你的用户名/project-name.git
+
+# 添加 Gitee
+.\git-devops.ps1 ssh create -p gitee
+.\git-devops.ps1 ssh push -p gitee
+.\git-devops.ps1 repo create -p gitee -n project-name
+git remote add gitee git@gitee-你的用户名:你的用户名/project-name.git
+```
+
+---
+
+## 三、常用命令参考
+
+### 3.1 SSH 管理
+
+```powershell
+# 创建 SSH 密钥
+.\git-devops.ps1 ssh create -p github              # 创建 GitHub SSH 密钥
+.\git-devops.ps1 ssh create -p gitee               # 创建 Gitee SSH 密钥
+
+# 上传公钥到平台
+.\git-devops.ps1 ssh push -p github                # 上传 GitHub 公钥
+.\git-devops.ps1 ssh push -p gitee                 # 上传 Gitee 公钥
+
+# 验证 SSH 连接
+.\git-devops.ps1 ssh verify -p github              # 验证 GitHub 连接
+.\git-devops.ps1 ssh verify -p gitee               # 验证 Gitee 连接
+
+# 删除平台上的公钥
+.\git-devops.ps1 ssh remove -p github -y           # 从 GitHub 删除
+.\git-devops.ps1 ssh remove -p gitee -y            # 从 Gitee 删除
+```
+
+### 3.2 仓库管理
+
+```powershell
+# 创建远程仓库
+.\git-devops.ps1 repo create -p github -n my-repo   # 在 GitHub 创建
+.\git-devops.ps1 repo create -p gitee -n my-repo    # 在 Gitee 创建
+
+# 删除远程仓库
+.\git-devops.ps1 repo delete -p github -n my-repo -y   # 在 GitHub 删除
+.\git-devops.ps1 repo delete -p gitee -n my-repo -y    # 在 Gitee 删除
+```
+
+### 3.3 Git 本地操作
+
+```powershell
+# 初始化 Git 仓库
+.\git-devops.ps1 git init                           # 初始化（自动设置 user.name/email）
+
+# 配置远程仓库
+.\git-devops.ps1 git remote                         # 配置 github 和 gitee remote
+
+# 推送到远程
+.\git-devops.ps1 git push                           # 推送到所有远程
+.\git-devops.ps1 git push -p github                 # 仅推送到 GitHub
+.\git-devops.ps1 git push -p gitee                  # 仅推送到 Gitee
+```
+
+### 3.4 一键初始化
+
+```powershell
+# 一键完成所有配置（SSH 创建 → 上传 → 仓库创建 → Git 初始化 → Remote 配置）
+.\git-devops.ps1 all init -y                        # 自动执行，无需确认
+.\git-devops.ps1 all init                           # 交互式确认
+.\git-devops.ps1 all init -DryRun                   # 预览模式，不实际执行
+```
+
+### 3.5 清理操作
+
+```powershell
+# 清理本地 Git 配置（保留 .git）
 .\git-devops.ps1 -c -y
 
-# Linux/macOS
-./git-devops.sh -c -y
-```
-
-**目的**：
-- 移除所有 remote 配置
-- 删除 `pushall` 别名
-- 保留 `.git` 目录和历史记录
-
-**预期输出**：
-```
-[WARN] Cleaning local Git config (keeping .git)...
-[INFO] Removed remote: gitee
-[INFO] Removed remote: github
-[OK] Local Git config cleaned (git history preserved)
-```
-
----
-
-#### 场景 2B：完全重置（删除 .git 目录）
-
-**适用情况**：
-- 想完全重新开始
-- 不需要保留任何提交记录
-
-```powershell
-# Windows
+# 删除 .git 目录（重置仓库）
 .\git-devops.ps1 -r -y
 
-# Linux/macOS
-./git-devops.sh -r -y
-```
+# 清理 SSH 密钥
+.\git-devops.ps1 clean keys -p github -y           # 清理 GitHub SSH 密钥
+.\git-devops.ps1 clean keys -y                       # 清理所有平台 SSH 密钥
 
-**目的**：
-- 删除整个 `.git` 目录
-- 相当于从未使用过 Git
+# 清理远程仓库
+.\git-devops.ps1 clean repos -p github -y          # 删除 GitHub 远程仓库
 
-**预期输出**：
-```
-[WARN] Resetting local Git repo (delete .git)...
-[OK] .git directory deleted
+# 完整清理（仓库 + SSH + 本地配置 + .git）
+.\git-devops.ps1 clean full -y
 ```
 
 ---
 
-#### 场景 2C：清理平台资源（平台密钥 + 仓库）
+## 四、命令选项说明
 
-**适用情况**：
-- 想完全清空所有资源
-- 需要重新创建
+### 4.1 全局选项
 
-```powershell
-# Windows - 预览模式（先看会做什么）
-.\git-devops.ps1 --dry-run clean keys -p github -y
+| 选项 | 说明 |
+|------|------|
+| `-p, --platform` | 指定平台：`github` 或 `gitee` |
+| `-n, --name` | 仓库名称 |
+| `-t, --title` | SSH 密钥标题 |
+| `-f, --force` | 覆盖已有资源（如强制覆盖 SSH 密钥） |
+| `-y, --yes` | 自动确认危险操作（如删除） |
+| `-D, --debug` | 显示 DEBUG 级别日志 |
+| `-q, --quiet` | 仅显示 WARN 和 ERROR |
+| `-h, --help` | 显示帮助信息 |
+| `--dry-run` | 预览模式，不实际执行 |
 
-# Windows - 执行清理
-.\git-devops.ps1 clean keys -p github -y
-.\git-devops.ps1 clean repos -p github -y
+### 4.2 日志级别
 
-# Linux/macOS - 执行清理
-./git-devops.sh clean keys -p github -y
-./git-devops.sh clean repos -p github -y
-```
-
-**目的**：
-- 从平台删除 SSH 公钥
-- 删除本地 SSH 密钥文件
-- 删除远程仓库
-
-**注意**：使用 `--dry-run` 可以先预览将要执行的操作，确认无误后再执行
-
----
-
-#### 场景 2D：重新初始化
-
-**适用情况**：
-- 清理完成后，需要重新配置
-
-```powershell
-# Windows
-.\git-devops.ps1 all init -p github -y
-
-# Linux/macOS
-./git-devops.sh all init -p github -y
-```
-
-**目的**：重新创建仓库、配置 remote
+| 级别 | 颜色 | 说明 |
+|------|------|------|
+| DEBUG | 灰色 | 详细调试信息（使用 `-D` 显示） |
+| INFO | 青色 | 一般操作信息（默认显示） |
+| WARN | 黄色 | 警告信息（如资源已存在） |
+| ERROR | 红色 | 错误信息（需要处理） |
+| SUCCESS | 绿色 | 成功信息 |
 
 ---
 
-## 参数速查表
+## 五、幂等性说明
 
-### 全局控制类
+**幂等性** = 重复执行相同命令会产生相同结果，不会报错。
 
-| 短选项 | 长选项 | 类型 | 说明 |
-|--------|--------|------|------|
-| `-y` | `--yes` | 开关 | 自动确认所有提示 |
-| `-h` | `--help` | 开关 | 显示帮助 |
-| `-D` | `--debug` | 开关 | 调试模式（显示详细信息） |
-| `-q` | `--quiet` | 开关 | 安静模式（只显示警告和错误） |
+| 操作 | 重复执行结果 | 说明 |
+|------|-------------|------|
+| SSH create | ✅ WARN | 密钥已存在时警告但不失败 |
+| SSH push | ✅ WARN | 公钥已存在时跳过但不报错 |
+| Repo create | ✅ WARN | 仓库已存在时警告但不失败 |
+| Repo delete | ✅ WARN | 仓库不存在时警告但继续 |
+| Git init | ✅ INFO | 仓库已初始化时跳过 |
 
-### 平台/操作类
-
-| 短选项 | 长选项 | 类型 | 说明 |
-|--------|--------|------|------|
-| `-p` | `--platform` | 值 | 平台：github 或 gitee |
-| `-n` | `--name` | 值 | 仓库名称 |
-| `-t` | `--title` | 值 | SSH 密钥标题 |
-| `-f` | `--force` | 开关 | 强制覆盖已存在的资源 |
-
-### 危险操作类
-
-| 短选项 | 长选项 | 类型 | 说明 |
-|--------|--------|------|------|
-| `-c` | `--clean` | 开关 | 清理本地 Git 配置（保留 .git） |
-| `-r` | `--reset` | 开关 | 删除 .git 目录 |
-| (无) | `--dry-run` | 开关 | 预览模式（只显示，不执行） |
-
-### 子命令
-
-| 子命令 | 说明 |
-|--------|------|
-| `ssh create` | 创建 SSH 密钥对 |
-| `ssh push` | 推送公钥到平台 |
-| `ssh verify` | 验证 SSH 连接 |
-| `ssh remove` | 从平台删除公钥 |
-| `repo create` | 创建远程仓库 |
-| `repo delete` | 删除远程仓库 |
-| `git init` | 初始化本地 Git 仓库 |
-| `git remote` | 配置远程仓库 |
-| `git push` | 推送到远程仓库 |
-| `all init` | 一键初始化（SSH + 仓库 + Git） |
-| `clean keys` | 清理 SSH 密钥（平台 + 本地） |
-| `clean repos` | 清理远程仓库 |
-
----
-
-## 命令示例
-
-### 从零开始（新用户）
-
+**示例：**
 ```powershell
-# 1. 创建目录
-mkdir test
-cd test
+# 第一次创建仓库
+.\git-devops.ps1 repo create -p github -n my-repo
+# 输出: [OK] GitHub repo created: my-repo
 
-# 2. 配置 .env 文件
-
-# 3. 创建 SSH 密钥并推送到平台
-.\git-devops.ps1 ssh create -p github -f    # 创建密钥
-.\git-devops.ps1 ssh push -p github          # 推送公钥
-.\git-devops.ps1 ssh verify -p github        # 验证连接
-
-# 4. 一键初始化
-.\git-devops.ps1 all init -p github -y
-
-# 5. 提交代码
-echo "# test" > README.md
-git add .
-git commit -m "Initial commit"
-git pushall
-```
-
-### 预览危险操作（推荐先执行）
-
-```powershell
-# 预览清理操作，不会真正执行
-.\git-devops.ps1 --dry-run clean keys -p github -y
-.\git-devops.ps1 --dry-run clean repos -p github -y
-```
-
-### 完全重新开始
-
-```powershell
-# 1. 完全重置（删除 .git）
-.\git-devops.ps1 -r -y
-
-# 2. 清理平台资源
-.\git-devops.ps1 clean keys -p github -y
-.\git-devops.ps1 clean repos -p github -y
-
-# 3. 重新初始化
-.\git-devops.ps1 all init -p github -y
+# 第二次创建（幂等）
+.\git-devops.ps1 repo create -p github -n my-repo
+# 输出: [WARN] GitHub repo already exists: my-repo
+# 不会失败！
 ```
 
 ---
 
-## 故障处理
+## 六、故障排查
 
-### 问题：SSH 连接失败
+### 6.1 SSH 连接失败
 
-**检查**：
+**问题：** `Could not resolve hostname`
+
+**解决：** 检查 `~/.ssh/config` 是否正确配置，或者运行：
 ```powershell
-.\git-devops.ps1 ssh verify -p github
+.\git-devops.ps1 ssh verify -p github -D   # 查看详细错误
 ```
 
-**解决**：确认公钥已添加到 GitHub/Gitee 设置中
+### 6.2 Token 权限不足
+
+**问题：** `API forbidden` 或 `401 Unauthorized`
+
+**解决：** 确保 Token 有以下权限：
+- GitHub: `repo` (完整仓库权限) + `ssh_keys` (SSH 密钥权限)
+- Gitee: `projects` (仓库权限)
+
+### 6.3 推送被拒绝
+
+**问题：** `Permission denied`
+
+**解决：**
+1. 验证 SSH 连接：`.\git-devops.ps1 ssh verify -p github`
+2. 检查公钥是否已上传：`.\git-devops.ps1 ssh push -p github`
+3. 检查 GitHub/Gitee 设置中的公钥
+
+### 6.4 仓库删除失败
+
+**问题：** HTTP 404 但脚本退出码 1
+
+**解决：** 这是预期行为（仓库可能已被删除），不影响后续操作。如需跳过此错误，可忽略。
 
 ---
 
-### 问题：仓库已存在
+## 七、文件结构
 
-**解决**：使用 `-f` 强制覆盖，或 `-y` 自动跳过
-```powershell
-.\git-devops.ps1 all init -p github -y -f
 ```
+项目目录/
+├── .env                    # 配置文件（包含 Token）
+├── git-devops.ps1          # Windows PowerShell 版本
+├── git-devops.sh           # Linux Bash 版本
+├── README.md               # 项目说明
+└── .git/                   # Git 仓库目录
+```
+
+**SSH 密钥位置：**
+- Windows: `C:\Users\用户名\.ssh\`
+- Linux: `/home/用户名/.ssh/`
+
+**密钥命名：**
+- GitHub: `id_ed25519_github_用户名`
+- Gitee: `id_ed25519_gitee_用户名`
 
 ---
 
-### 问题：执行 `--dry-run` 后想真正执行
+## 八、安全注意事项
 
-**解决**：去掉 `--dry-run` 参数重新执行
-```powershell
-.\git-devops.ps1 clean keys -p github -y
-```
+1. **不要提交 `.env` 文件** - 包含敏感 Token
+2. **SSH 私钥文件权限** - Windows 由系统管理，Linux 需设置 `600`
+3. **Token 保护** - 不要在代码中硬编码 Token，使用 `.env` 文件
+4. **定期清理** - 使用完毕后运行 `clean full` 清理测试资源
 
 ---
 
-## 快速命令卡片
+## 九、命令速查表
 
-### 新环境初始化
-```
-1. mkdir test && cd test
-2. 配置 .env
-3. ssh create -p github -f
-4. all init -p github -y
-5. git add . && git commit -m "init" && git pushall
-```
+| 操作 | Windows 命令 | Linux 命令 |
+|------|--------------|------------|
+| 帮助 | `.\git-devops.ps1 -h` | `./git-devops.sh -h` |
+| 创建 SSH | `.\git-devops.ps1 ssh create -p github` | `./git-devops.sh ssh create -p github` |
+| 上传公钥 | `.\git-devops.ps1 ssh push -p github` | `./git-devops.sh ssh push -p github` |
+| 验证连接 | `.\git-devops.ps1 ssh verify -p github` | `./git-devops.sh ssh verify -p github` |
+| 创建仓库 | `.\git-devops.ps1 repo create -p github -n myrepo` | `./git-devops.sh repo create -p github -n myrepo` |
+| 删除仓库 | `.\git-devops.ps1 repo delete -p github -n myrepo -y` | `./git-devops.sh repo delete -p github -n myrepo -y` |
+| 初始化 Git | `.\git-devops.ps1 git init` | `./git-devops.sh git init` |
+| 配置远程 | `.\git-devops.ps1 git remote` | `./git-devops.sh git remote` |
+| 推送代码 | `.\git-devops.ps1 git push` | `./git-devops.sh git push` |
+| 一键初始化 | `.\git-devops.ps1 all init -y` | `./git-devops.sh all init -y` |
+| 完整清理 | `.\git-devops.ps1 clean full -y` | `./git-devops.sh clean full -y` |
+| Dry-Run | `.\git-devops.ps1 ssh create -p github -DryRun` | `./git-devops.sh --dry-run ssh create -p github` |
 
-### 清理（保留 .git）
-```
--c -y
-```
+---
 
-### 完全重置
-```
--r -y
-```
-
-### 预览清理
-```
---dry-run clean keys -p github -y
-```
+**手册版本：** 1.0
+**最后更新：** 2026-05-18
+**维护者：** Claude Code
